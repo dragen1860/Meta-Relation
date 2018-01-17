@@ -41,13 +41,13 @@ def eval(db, rn):
 
 
 if __name__ == '__main__':
-	resize = 184
+	resize = 224
 	n_way = 5
 	k_shot = 5
 	n_query_per_cls = 1
 	batchsz = 1
 	rn = RN(resize).cuda()
-	mdl_file = 'ckpt/rn55_%d%d.mdl'%(rn.c, rn.d)
+	mdl_file = 'ckpt/rn55_%d%d.mdl' % (rn.c, rn.d)
 
 	if os.path.exists(mdl_file):
 		print('load checkpoint ...', mdl_file)
@@ -58,16 +58,17 @@ if __name__ == '__main__':
 	print('total params:', params)
 
 	optimizer = optim.Adam(rn.parameters(), lr=1e-5, weight_decay=1e-4)
-	scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose = True)
+	scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose=True)
 	tb = SummaryWriter('runs', str(datetime.now()))
 
 	best_accuracy = 0
 	for epoch in range(1000):
-		mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=10000, resize=resize)
-		db = DataLoader(mini,  batchsz, shuffle=True, num_workers=6)
-		mini_val = MiniImagenet('../mini-imagenet/',  mode='val', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=100, resize=resize)
+		mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=10000,
+		                    resize=resize)
+		db = DataLoader(mini, batchsz, shuffle=True, num_workers=6)
+		mini_val = MiniImagenet('../mini-imagenet/', mode='val', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=100,
+		                        resize=resize)
 		db_val = DataLoader(mini_val, batchsz, shuffle=True)
-
 
 		for step, batch in enumerate(db):
 			# batch : ([10,10,3,84,84], [10,10], [10,75,3,84,84], [10,75])
@@ -83,7 +84,7 @@ if __name__ == '__main__':
 			loss.backward()
 			optimizer.step()
 
-			if step % 50 == 0 :
+			if step % 50 == 0:
 				accuracy, total_val_loss = eval(db_val, rn)
 
 				tb.add_scalar('accuracy', accuracy)
@@ -91,21 +92,21 @@ if __name__ == '__main__':
 				# update learning rate per epoch
 				scheduler.step(total_val_loss)
 
-
 				if accuracy > best_accuracy:
 					best_accuracy = accuracy
 					torch.save(rn.state_dict(), mdl_file)
-					print('saved to checkpoint:',mdl_file)
+					print('saved to checkpoint:', mdl_file)
 
-					print('now conduct test performance...')
-					mini_test = MiniImagenet('../mini-imagenet/', mode='test', n_way=n_way, k_shot=k_shot, k_query=1,
-					                        batchsz=200, resize=resize)
-					db_test = DataLoader(mini_test, batchsz, shuffle=True)
-					accuracy_test, _ = eval(db_test, rn)
-					print('>>>>>>>>>>>> test accuracy:', accuracy_test, '<<<<<<<<<<<<<<')
+					if accuracy > 0.4:
+						print('now conduct test performance...')
+						mini_test = MiniImagenet('../mini-imagenet/', mode='test', n_way=n_way, k_shot=k_shot,
+						                         k_query=1,
+						                         batchsz=200, resize=resize)
+						db_test = DataLoader(mini_test, batchsz, shuffle=True)
+						accuracy_test, _ = eval(db_test, rn)
+						print('>>>>>>>>>>>> test accuracy:', accuracy_test, '<<<<<<<<<<<<<<')
 
-
-
-			if step% 15 == 0 and step != 0:
+			if step % 15 == 0 and step != 0:
 				tb.add_scalar('loss', loss.cpu().data[0])
-				print('%d-way %d-shot %d batch> epoch:%d step:%d, loss:%f'%(n_way, k_shot, batchsz, epoch, step, loss.cpu().data[0]))
+				print('%d-way %d-shot %d batch> epoch:%d step:%d, loss:%f' % (
+				n_way, k_shot, batchsz, epoch, step, loss.cpu().data[0]))

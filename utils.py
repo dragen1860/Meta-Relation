@@ -2,10 +2,10 @@ import torch
 import numpy as np
 from torch.autograd import Variable
 
+
 def make_imgs(n_way, k_shot, n_query_per_cls, batchsz,
               support_x, support_y, query_x, query_y, query_pred,
-              mean=(0.5,0.5,0.5), std = (0.5,0.5,0.5)):
-
+              mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)):
 	# randomly select one batch
 	batchidx = np.random.randint(batchsz)
 	# k_shot . n_qeuery_per_cls...6... n_query_per_cls
@@ -14,8 +14,10 @@ def make_imgs(n_way, k_shot, n_query_per_cls, batchsz,
 	# de-normalize
 	img_support = support_x[batchidx].clone()
 	img_query = query_x[batchidx].clone()
-	img_support = img_support * Variable(torch.FloatTensor(list(std)).view(1,3,1,1)).cuda() + Variable(torch.FloatTensor(list(mean)).view(1,3,1,1)).cuda()
-	img_query = img_query * Variable(torch.FloatTensor(list(std)).view(1,3,1,1)).cuda() + Variable(torch.FloatTensor(list(mean)).view(1,3,1,1)).cuda()
+	img_support = img_support * Variable(torch.FloatTensor(list(std)).view(1, 3, 1, 1)).cuda() + Variable(
+		torch.FloatTensor(list(mean)).view(1, 3, 1, 1)).cuda()
+	img_query = img_query * Variable(torch.FloatTensor(list(std)).view(1, 3, 1, 1)).cuda() + Variable(
+		torch.FloatTensor(list(mean)).view(1, 3, 1, 1)).cuda()
 
 	label = support_y[batchidx]  # [setsz]
 	label, indices = torch.sort(label, dim=0)

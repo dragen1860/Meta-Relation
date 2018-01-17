@@ -21,7 +21,7 @@ class MiniImagenet(Dataset):
 	sets: conains n_way * k_shot for meta-train set, n_way * n_query for meta-test set.
 	"""
 
-	def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx = 0):
+	def __init__(self, root, mode, batchsz, n_way, k_shot, k_query, resize, startidx=0):
 		"""
 
 		:param root: root path of mini-imagenet
@@ -34,41 +34,40 @@ class MiniImagenet(Dataset):
 		:param startidx: start to index label from startidx
 		"""
 
-		self.batchsz = batchsz # batch of set, not batch of imgs
+		self.batchsz = batchsz  # batch of set, not batch of imgs
 		self.n_way = n_way  # n-way
 		self.k_shot = k_shot  # k-shot
 		self.k_query = k_query  # for evaluation
 		self.setsz = self.n_way * self.k_shot  # num of samples per set
 		self.querysz = self.n_way * self.k_query  # number of samples per set for evaluation
-		self.resize = resize # resize to
-		self.startidx = startidx # index label not from 0, but from startidx
-		print('%s, b:%d, %d-way, %d-shot, %d-query, resize:%d'%(mode, batchsz, n_way, k_shot, k_query, resize))
+		self.resize = resize  # resize to
+		self.startidx = startidx  # index label not from 0, but from startidx
+		print('%s, b:%d, %d-way, %d-shot, %d-query, resize:%d' % (mode, batchsz, n_way, k_shot, k_query, resize))
 
 		if mode == 'train':
 			self.transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
-		                                     transforms.RandomResizedCrop(self.resize, scale=(0.8, 1.0)),
-		                                     transforms.RandomHorizontalFlip(),
-		                                     transforms.RandomVerticalFlip(),
-		                                     transforms.RandomRotation(45),
-		                                     transforms.ColorJitter(0.1,0.1,0.2,0),
-		                                     transforms.ToTensor(),
-		                                     # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-		                                     ])
+			                                     transforms.RandomResizedCrop(self.resize, scale=(0.8, 1.0)),
+			                                     transforms.RandomHorizontalFlip(),
+			                                     transforms.RandomVerticalFlip(),
+			                                     transforms.RandomRotation(45),
+			                                     transforms.ColorJitter(0.1, 0.1, 0.2, 0),
+			                                     transforms.ToTensor(),
+			                                     # transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+			                                     ])
 		else:
 			self.transform = transforms.Compose([lambda x: Image.open(x).convert('RGB'),
-		                                     transforms.Resize((self.resize, self.resize)),
-		                                     transforms.ToTensor(),
-		                                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-		                                     ])
-
+			                                     transforms.Resize((self.resize, self.resize)),
+			                                     transforms.ToTensor(),
+			                                     transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+			                                     ])
 
 		self.path = os.path.join(root, 'images')  # image path
 		csvdata = self.loadCSV(os.path.join(root, mode + '.csv'))  # csv path
 		self.data = []
 		self.img2label = {}
 		for i, (k, v) in enumerate(csvdata.items()):
-			self.data.append(v) # [[img1, img2, ...], [img111, ...]]
-			self.img2label[k] = i + self.startidx # {"img_name[:9]":label}
+			self.data.append(v)  # [[img1, img2, ...], [img111, ...]]
+			self.img2label[k] = i + self.startidx  # {"img_name[:9]":label}
 		self.cls_num = len(self.data)
 
 		self.create_batch(self.batchsz)
@@ -112,7 +111,8 @@ class MiniImagenet(Dataset):
 				selected_imgs_idx = np.random.choice(len(self.data[cls]), self.k_shot + self.k_query, False)
 				indexDtrain = np.array(selected_imgs_idx[:self.k_shot])  # idx for Dtrain
 				indexDtest = np.array(selected_imgs_idx[self.k_shot:])  # idx for Dtest
-				support_x.append(np.array(self.data[cls])[indexDtrain].tolist())  # get all images filename for current Dtrain
+				support_x.append(
+					np.array(self.data[cls])[indexDtrain].tolist())  # get all images filename for current Dtrain
 				query_x.append(np.array(self.data[cls])[indexDtest].tolist())
 
 			self.support_x_batch.append(support_x)  # append set to current sets
@@ -134,13 +134,14 @@ class MiniImagenet(Dataset):
 		query_y = np.zeros((self.querysz), dtype=np.int)
 
 		flatten_support_x = [os.path.join(self.path, item)
-		                               for sublist in self.support_x_batch[index] for item in sublist]
-		support_y = np.array([self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
-			                            for sublist in self.support_x_batch[index] for item in sublist])
+		                     for sublist in self.support_x_batch[index] for item in sublist]
+		support_y = np.array(
+			[self.img2label[item[:9]]  # filename:n0153282900000005.jpg, the first 9 characters treated as label
+			 for sublist in self.support_x_batch[index] for item in sublist])
 		flatten_query_x = [os.path.join(self.path, item)
-		                    for sublist in self.query_x_batch[index] for item in sublist]
+		                   for sublist in self.query_x_batch[index] for item in sublist]
 		query_y = np.array([self.img2label[item[:9]]
-		                     for sublist in self.query_x_batch[index] for item in sublist])
+		                    for sublist in self.query_x_batch[index] for item in sublist])
 
 		for i, path in enumerate(flatten_support_x):
 			support_x[i] = self.transform(path)
