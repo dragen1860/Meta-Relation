@@ -172,27 +172,33 @@ if __name__ == '__main__':
 	from torch.optim import lr_scheduler
 	from MiniImagenet import MiniImagenet
 	from torch.utils.data import DataLoader
+	import  os
 
 	resize = 224
 	n_way = 5
 	k_shot = 5
 	k_query = 1
 	batchsz = 4
-	rn = Meta().cuda()
-	mdl_file = 'ckpt/pretain.mdl'
+	meta = Meta().cuda()
+	# if not mdl file exists, we need to train from pretrained mdl
+	pretrain_mdl_file = 'ckpt/pretain.mdl'
+	mdl_file = 'ckpt/meta%d%d.dml'%(n_way, k_shot)
 
+	if os.path.exists(pretrain_mdl_file):
+		print('load pretrained mdl ...', pretrain_mdl_file)
+		meta.load_state_dict(torch.load(pretrain_mdl_file))
 
-	model_parameters = filter(lambda p: p.requires_grad, rn.parameters())
+	model_parameters = filter(lambda p: p.requires_grad, meta.parameters())
 	params = sum([np.prod(p.size()) for p in model_parameters])
 	print('total params:', params)
 
-	optimizer = optim.Adam(rn.parameters(), lr=1e-5, weight_decay=1e-5)
+	optimizer = optim.Adam(meta.parameters(), lr=1e-5, weight_decay=1e-5)
 	scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose=True)
 
-	best_accuracy = 0
+	best_train_acc = 0
 	for epoch in range(1000):
 		mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=n_way, k_shot=k_shot, k_query=k_query,
-		                    batchsz=10000, resize=resize)
+		                    batchsz = 500, resize=resize)
 		db = DataLoader(mini, batchsz, shuffle=True, num_workers=6)
 
 		for step, batch in enumerate(db):
@@ -202,9 +208,8 @@ if __name__ == '__main__':
 			query_x = Variable(batch[2]).cuda()
 			query_y = Variable(batch[3]).cuda()
 
-
-			rn.train()
-			cls_loss, train_acc = rn.pretrain(support_x, support_y, query_x, query_y)
+			meta.train()
+			cls_loss, train_acc = meta.pretrain(support_x, support_y, query_x, query_y)
 			optimizer.zero_grad()
 			cls_loss.backward()
 			optimizer.step()
@@ -212,6 +217,11 @@ if __name__ == '__main__':
 			if step % 15 == 0 and step != 0:
 				print('%d-way %d-shot %d batch> epoch:%d step:%d, cls loss:%f, train acc:%f' % (
 				n_way, k_shot, batchsz, epoch, step, cls_loss.cpu().data[0], train_acc))
+
+			if step % 30 == 0 and step != 0 and train_acc > best_train_acc and train_acc > 0.3:
+				best_train_acc = train_acc
+				torch.save(meta.state_dict(), pretrain_mdl_file)
+				print('saved to pretrained mdl file.')
 
 
 			# rn.train()
