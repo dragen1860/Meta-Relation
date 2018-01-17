@@ -93,10 +93,17 @@ class ResNet(nn.Module):
 		self.layer1 = self._make_layer(block, 64, layers[0])
 		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
-		self.layer4 = self._make_layer(block, 64, layers[3], stride=3)
+		# self.layer4 = self._make_layer(block, 64, layers[3], stride=3)
+		self.layer4 = nn.Sequential(nn.Conv2d(1024, 256, kernel_size=5, stride=3),
+		                            nn.ReLU(inplace=True))
+		self.printed = False
 
-		self.avgpool = nn.AvgPool2d(5, stride=3)
-		self.fc = nn.Linear(4*4*1024, num_classes)
+		# self.avgpool = nn.AvgPool2d(5, stride=3)
+		# self.conv_fc = nn.Sequential(nn.Conv2d(1024, 256, kernel_size=5, stride=3),
+		#                              nn.ReLU(inplace=True))
+		self.fc = nn.Sequential(nn.Linear(4*1024, 256),
+		                     nn.ReLU(inplace=True),
+		                     nn.Linear(256, num_classes))
 		print(self)
 
 		for m in self.modules():
@@ -133,22 +140,16 @@ class ResNet(nn.Module):
 		x = self.layer1(x)
 		x = self.layer2(x)
 		x = self.layer3(x)
-		# [1024, 14, 14]
-		# print('share x:', x.size())
-
 		# reduce the h*w for relational module
 		x_rn = self.layer4(x)
-		# [256, 5, 5]
-		# print('x_rn:', x_rn.size())
-
-		output =  self.avgpool(x)
-		# after pooling: [1024, 4, 4]
-		# print('pool', output.size())
-		output = output.view(output.size(0), -1)
+		# [1024, 14, 14] => [256, 4, 4]
+		# if not self.printed:
+		# 	print('X => rn:', x_rn.size())
+		# 	self.printed = True
+		output = x_rn.view(x_rn.size(0), -1)
 		output = self.fc(output)
 
-		# x [feature]
-		# output [classification]
+
 		return x_rn, output
 
 
