@@ -166,7 +166,7 @@ class Meta(nn.Module):
 		correct = torch.eq(pred, query_y).sum()
 		total = batchsz * querysz
 
-		return correct
+		return correct, total
 
 
 
