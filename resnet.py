@@ -95,8 +95,8 @@ class ResNet(nn.Module):
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
 		self.layer4 = self._make_layer(block, 64, layers[3], stride=3)
 
-		self.avgpool = nn.AvgPool2d(3, stride=1)
-		self.fc = nn.Linear(2304, num_classes)
+		self.avgpool = nn.AvgPool2d(5, stride=3)
+		self.fc = nn.Linear(4*4*1024, num_classes)
 		print(self)
 
 		for m in self.modules():
@@ -133,17 +133,23 @@ class ResNet(nn.Module):
 		x = self.layer1(x)
 		x = self.layer2(x)
 		x = self.layer3(x)
-		x = self.layer4(x)
+		# [1024, 14, 14]
+		# print('share x:', x.size())
 
-		# print('layer4:', x.size())
+		# reduce the h*w for relational module
+		x_rn = self.layer4(x)
+		# [256, 5, 5]
+		# print('x_rn:', x_rn.size())
+
 		output =  self.avgpool(x)
+		# after pooling: [1024, 4, 4]
 		# print('pool', output.size())
 		output = output.view(output.size(0), -1)
 		output = self.fc(output)
 
 		# x [feature]
 		# output [classification]
-		return x, output
+		return x_rn, output
 
 
 def resnet_mini(**kwargs):
