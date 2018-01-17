@@ -8,8 +8,12 @@ from resnet import resnet_mini
 
 
 class Meta(nn.Module):
-	def __init__(self):
+	def __init__(self, n_way, k_shot):
 		super(Meta, self).__init__()
+
+		self.n_way = n_way
+		self.k_shot = k_shot
+		self.topk = k_shot # this is to select topk num of imgs to ensemble.
 
 		self.resnet = resnet_mini()
 		repnet_sz = self.resnet(Variable(torch.rand(1, 3, 224, 224)))[0].size()
@@ -80,31 +84,109 @@ class Meta(nn.Module):
 		total = batchsz * setsz
 
 
-		return loss, correct/total
+		return loss, correct / total
 
-	def forward(self, support_x, support_y, query_x, query_y):
+
+	def predict(self, support_x, support_y, query_x, query_y):
 		"""
-		in training stage, we will merage all support_x and query_x data and then compose a large relational matrix.
-		The matrix includes the similar relation between each labels and the pred matrix should converge to target matrix.
-		besides, the matrix should keep symmetric.
+
 		:param support_x: [b, setsz, c_, h, w]
 		:param support_y: [b, setsz]
 		:param query_x:   [b, querysz, c_, h, w]
 		:param query_y:   [b, querysz]
 		:return:
 		"""
-		# [b, setsz, c_, h, w]+ [b, querysz, c_, h, w] => [batchsz, setsz+querysz, c_, h, w]
+		batchsz, setsz, c_, h, w = support_x.size()
+		querysz = support_x.size(1)
+		# [b, setsz, c_, h, w] => [b, 1, setsz, c_, h, w] => [1, b, setsz, c_, h, w] => [querysz, b, setsz, c_, h, w]
+		support_x = support_x.unsqueeze(1).transpose(0, 1).expand(querysz, batchsz, setsz, c_, h, w)
+		# => [querysz*batch, setsz, c_, h, w]
+		support_x = support_x.view(querysz * batchsz, setsz, c_, h, w)
+		# [b, querysz, c_, h, w] => [b, querysz, 1, c_, h, w] => [querysz, b, 1, c_, h, w] => [querysz*b, 1, c_, h, w]
+		query_x = query_x.unsqueeze(2).transpose(0, 1).view(querysz * batchsz, 1, c_, h, w)
+		# cat [querysz*b, setsz, c_, h, w] with [querysz*b, 1, c_, h, w] => [querysz*b, setsz+1, c_, h, w]
 		input = torch.cat([support_x, query_x], dim = 1)
-		# [b, setsz] + [b, querysz] => [b, setsz+querysz]
-		label = torch.cat([support_y, query_y], dim = 1)
-		# from here on, we update setsz = setsz + querysz
+		# get relation matrix and cls_logits
+		# rn_score: [querysz*b, setsz+1, setsz+1, 1]
+		# cls_logits: [querysz*b, setsz+1, 64]
+		# TODO: add unknown node
+		rn_score, cls_logits = self.rn(input)
+		# [querysz*b, setsz+1, setsz+1, 1] => [querysz, b, setsz+1, setsz+1, 1] => [b, querysz, setsz+1, setsz+1, 1]
+		rn_score = rn_score.view(querysz, batchsz, setsz + 1, setsz + 1, 1).transpose(0, 1)
+		# [querysz*b, setsz+1, 64] => [querysz, b, setsz+1, 64] => [b, querysz, setsz+1, 64]
+		cls_logits = cls_logits.view(querysz, batchsz, setsz + 1, setsz + 1, 1).transpose(0, 1)
+
+		# now try to find the maximum similar node from score matrix
+		# [b, querysz, setsz+1, setsz+1, 1] => [b, querysz, setsz+1, setsz+1]
+		rn_score = rn_score.squeeze(4)
+		# [b, querysz, setsz+1, setsz+1]
+		rn_score_np = rn_score.cpu().data.numpy()
+		pred = []
+		for i, batch in enumerate(rn_score_np):
+			for j, query in enumerate(batch):
+				# query: [setsz+1, setsz+1]
+				row = query[-1, :-1] # [setsz]
+				col = query[:-1, -1] # [setsz]
+				row_sim = col_sim = [] # [n_way]
+				for way in range(self.n_way):
+					row_sim.append( np.sum(row[way * self.k_shot : (way + 1) * self.k_shot]) )
+					col_sim.append( np.sum(col[way * self.k_shot : (way + 1) * self.k_shot]) )
+				merge = row + col # [2*n_way]
+				idx = np.array(merge).argmax() % self.n_way
+				pred.append(support_y.cpu().data.numpy()[i, idx])
+		# pred: [b, querysz]
+		pred = Variable(torch.from_numpy(np.array(pred))).cuda()
+
+		# # indices_row: [b, querysz, setsz+1, topk]
+		# prob_row, indices_row = torch.topk(rn_score, self.topk, dim= 3)
+		# # only take the last row => [b, querysz, topk]
+		# indices_row = indices_row[:,:,-1, :]
+		# # indices_col: [b, querysz, topk, setsz+1]
+		# prob_col, indices_col = torch.topk(rn_score, self.topk, dim= 2)
+		# # only take the last col => [b, querysz, topk]
+		# indices_col = indices_col[:,:,:, -1]
+		# # NOTCIE: the returned indices is sorted, index 0 has the largest similarity.
+		# # TODO: add more ensemble algorithms here
+		# # here we just use simple ensemble algorithm
+		# # [b, querysz, topk] => [b, querysz, 2*topk]
+		# indices = torch.cat([indices_row, indices_col], dim = 2)
+		# prob = torch.cat([prob_row, prob_col], dim = 2)
+		# # merge the row & col prob and re-sort it
+		# # as the topk is from each row or column, when merging, we need to resort it according to similarity score.
+		# prob_sort, indices_sort_idx= torch.sort(prob, dim= 2)
+		# indices_sort = torch.gather(indices, dim=2, index=indices_sort_idx)
+		# # now we have sorted prob and indices
+		# # prob_sort: [b, querysz, 2*topk]
+		# # indices_sort: [b, querysz, 2*topk]
+		# # indices_sort is just index of support_y, it's NOT label, we need to retrieve label information here.
+		# # support_y: [b, setsz]
+		# # label_sort: [b, querysz, 2*topk]
+		# label_sort = torch.gather(support_y, dim= 1, index=indices_sort)
+
+		correct = torch.eq(pred, query_y).sum()
+		total = batchsz * querysz
+
+		return correct
+
+
+
+
+
+	def rn(self, input):
+		"""
+		Given the input relation imgs, output a relation matrix and cls_logits.
+		This function will be shared by predicting and forwarding fuction since both the two functions requires relation
+		matrix to predict and backward.
+		:param input: [b, setsz, c_, h, w]
+		:return:
+		"""
 		batchsz, setsz, c_, h, w = input.size()
-		c, d = self.c, self.d
+		c, d = self.c, self.d # c will be set when the function runs
 
 		## Combination bewteen two images, between objects in two images
 		# get feature from [b, setsz, c_, h, w] => [b*setsz, c, d, d]
-		# cls_pred is the prediction of classification, => [batchsz*setsz, 64]
-		x, cls_pred = self.resnet(input.view(batchsz * setsz, c_, h, w))
+		# cls_logits is the prediction of classification, => [batchsz*setsz, 64]
+		x, cls_logits = self.resnet(input.view(batchsz * setsz, c_, h, w))
 		# [b*setsz, c, d, d] => [b, setsz, c, d, d] => [b, setsz, c+2, d, d]
 		x = torch.cat([x.view(batchsz, setsz, c, d, d), Variable(self.coord.expand(batchsz, setsz, 2, d, d)).cuda()], dim=2)
 		# update c, DO not update self.c
@@ -128,10 +210,33 @@ class Meta(nn.Module):
 		x_f = x_f.view(batchsz * setsz * setsz, d * d * d * d, -1).sum(1)  # the last dim can be derived by layer setting
 		# push to F network
 		# [batchsz * setsz * setsz, -1] => [batchsz * setsz * setsz, new_dim] => [batch, setsz, setsz, 1]
-		pred = self.f(x_f).view(batchsz, setsz, setsz, 1)
+		score = self.f(x_f).view(batchsz, setsz, setsz, 1)
+
+		return score, cls_logits
+
+	def forward(self, support_x, support_y, query_x, query_y):
+		"""
+		in training stage, we will merage all support_x and query_x data and then compose a large relational matrix.
+		The matrix includes the similar relation between each labels and the pred matrix should converge to target matrix.
+		besides, the matrix should keep symmetric.
+		:param support_x: [b, setsz, c_, h, w]
+		:param support_y: [b, setsz]
+		:param query_x:   [b, querysz, c_, h, w]
+		:param query_y:   [b, querysz]
+		:return:
+		"""
+		# [b, setsz, c_, h, w] + [b, querysz, c_, h, w] => [batchsz, setsz+querysz, c_, h, w]
+		input = torch.cat([support_x, query_x], dim = 1)
+		# from here on, we update setsz = setsz + querysz
+		batchsz, setsz, c_, h, w = input.size()
+		c, d = self.c, self.d
+
+		pred, cls_logits = self.rn(input)
 
 
 		## now build its label
+		# [b, setsz] + [b, querysz] => [b, setsz+querysz]
+		label = torch.cat([support_y, query_y], dim = 1)
 		# [b, setsz] => [b, setsz, 1] => [b, 1, setsz, 1] => [b, setsz, setsz, 1]
 		label_i = label.unsqueeze(2).unsqueeze(1).expand(batchsz, setsz, setsz, 1)
 		# [b, setsz] => [b, setsz, 1] => [b, setsz, 1, 1] => [b, setsz, setsz, 1]
@@ -156,14 +261,15 @@ class Meta(nn.Module):
 		anti_norm = torch.norm(anti, 2, -1).norm(2, -1)
 		# [b] - [b] and divide by [b] + [b] => [b]
 		sym_loss = ((sym_norm - anti_norm) / (sym_norm + anti_norm)).mean()
-		# euclidean distance
+		# 2. euclidean distance
 		euc_loss = torch.pow(pred - y, 2).mean()
-		# classificatio loss, cls_pred: [b * setsz, 64], label: [b, setsz] => [b*setsz]
-		cls_loss = self.criteon(cls_pred, label.view(-1))
+		# 3. classificatio loss, cls_logits: [b * setsz, 64], label: [b, setsz] => [b*setsz]
+		cls_loss = self.criteon(cls_logits, label.view(-1))
 		# sum over loss
 		rn_loss = euc_loss - 0.1 * sym_loss
 
 		return cls_loss, rn_loss, sym_loss
+
 
 
 
@@ -192,7 +298,7 @@ if __name__ == '__main__':
 	params = sum([np.prod(p.size()) for p in model_parameters])
 	print('total params:', params)
 
-	optimizer = optim.Adam(meta.parameters(), lr=1e-5, weight_decay=1e-5)
+	optimizer = optim.Adam(meta.parameters(), lr=1e-5, weight_decay=1e-6)
 	scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, 'min', verbose=True)
 
 	best_train_acc = 0
@@ -218,7 +324,7 @@ if __name__ == '__main__':
 				print('%d-way %d-shot %d batch> epoch:%d step:%d, cls loss:%f, train acc:%f' % (
 				n_way, k_shot, batchsz, epoch, step, cls_loss.cpu().data[0], train_acc))
 
-			if step % 30 == 0 and step != 0 and train_acc > best_train_acc and train_acc > 0.3:
+			if step % 100 == 0 and step != 0 and train_acc > best_train_acc and train_acc > 0.1:
 				best_train_acc = train_acc
 				torch.save(meta.state_dict(), pretrain_mdl_file)
 				print('saved to pretrained mdl file.')

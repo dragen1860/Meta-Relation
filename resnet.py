@@ -158,5 +158,5 @@ def resnet_mini(**kwargs):
 
 	Args:
 	"""
-	model = ResNet(Bottleneck, [3, 4, 6, 2], **kwargs)
+	model = ResNet(Bottleneck, [3, 4, 6], **kwargs)
 	return model
