@@ -5,7 +5,7 @@ from torch.nn import functional as F
 from torch import optim
 from torchvision.models import resnet18, resnet34, resnet50
 import numpy as np
-
+from resnet import resnet_mini
 
 
 class RN(nn.Module):
@@ -17,23 +17,18 @@ class RN(nn.Module):
 	for same-class combination, the network should output 1 and 0 for diff-class.
 	In one-shot setting, there is only one same-class pairs, therefore the target = argmax(output)
 	"""
-	def __init__(self, resize, kernelsz):
+	def __init__(self, resize):
 		super(RN, self).__init__()
 
-		self.build(resize, kernelsz)
+		self.build(resize)
 
-	def build(self, resize, kernelsz = 3):
+	def build(self, resize):
 		"""
 		build forward network structure
 		:return:
 		"""
 		# build feature representation net
-		# build feature representation net
-		resnet = resnet18(pretrained=True)
-		modules = list(resnet.children())[:-2]
-		self.repnet = nn.Sequential(*modules,
-		                            nn.Conv2d(512,256, kernel_size = kernelsz),
-		                            nn.ReLU(inplace=True)) # [c, d, d]
+		self.repnet = resnet_mini()
 		repnet_sz = self.repnet(Variable(torch.randn((1, 3, resize, resize)))).size()
 		self.d = repnet_sz[2] # this is the size of repnet
 		self.c = repnet_sz[1] # this is the channel of repnet, not general channel

@@ -45,8 +45,8 @@ if __name__ == '__main__':
 	n_way = 5
 	k_shot = 5
 	n_query_per_cls = 1
-	batchsz = 9
-	rn = RN(resize, 3).cuda()
+	batchsz = 1
+	rn = RN(resize).cuda()
 	mdl_file = 'ckpt/rn55_%d%d.mdl'%(rn.c, rn.d)
 
 	if os.path.exists(mdl_file):
