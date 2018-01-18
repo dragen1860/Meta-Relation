@@ -1,5 +1,6 @@
 import torch.nn as nn
 import math
+from torch.utils import model_zoo
 
 __all__ = ['ResNet', 'resnet_mini']
 
@@ -94,14 +95,14 @@ class ResNet(nn.Module):
 		self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
 		self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
 		# self.layer4 = self._make_layer(block, 64, layers[3], stride=3)
-		self.layer4 = nn.Sequential(nn.Conv2d(1024, 256, kernel_size=5, stride=3),
+		self.layer4_my = nn.Sequential(nn.Conv2d(1024, 256, kernel_size=5, stride=3),
 		                            nn.ReLU(inplace=True))
 		self.printed = False
 
 		# self.avgpool = nn.AvgPool2d(5, stride=3)
 		# self.conv_fc = nn.Sequential(nn.Conv2d(1024, 256, kernel_size=5, stride=3),
 		#                              nn.ReLU(inplace=True))
-		self.fc = nn.Sequential(nn.Linear(4*1024, 256),
+		self.fc_my = nn.Sequential(nn.Linear(4*1024, 256),
 		                     nn.ReLU(inplace=True),
 		                     nn.Linear(256, num_classes))
 		print(self)
@@ -110,6 +111,7 @@ class ResNet(nn.Module):
 			if isinstance(m, nn.Conv2d):
 				n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
 				m.weight.data.normal_(0, math.sqrt(2. / n))
+
 			elif isinstance(m, nn.BatchNorm2d):
 				m.weight.data.fill_(1)
 				m.bias.data.zero_()
@@ -141,22 +143,32 @@ class ResNet(nn.Module):
 		x = self.layer2(x)
 		x = self.layer3(x)
 		# reduce the h*w for relational module
-		x_rn = self.layer4(x)
+		x_rn = self.layer4_my(x)
 		# [1024, 14, 14] => [256, 4, 4]
 		# if not self.printed:
 		# 	print('X => rn:', x_rn.size())
 		# 	self.printed = True
 		output = x_rn.view(x_rn.size(0), -1)
-		output = self.fc(output)
+		output = self.fc_my(output)
 
 
 		return x_rn, output
 
 
-def resnet_mini(**kwargs):
+def resnet_mini(pretrained = False, **kwargs):
 	"""Constructs a ResNet-Mini-Imagenet model.
 
 	Args:
 	"""
+	model_urls = {
+		'resnet18': 'https://download.pytorch.org/models/resnet18-5c106cde.pth',
+		'resnet34': 'https://download.pytorch.org/models/resnet34-333f7ec4.pth',
+		'resnet50': 'https://download.pytorch.org/models/resnet50-19c8e357.pth',
+		'resnet101': 'https://download.pytorch.org/models/resnet101-5d3b4d8f.pth',
+		'resnet152': 'https://download.pytorch.org/models/resnet152-b121ed2d.pth',
+	}
+
 	model = ResNet(Bottleneck, [3, 4, 6], **kwargs)
+	if pretrained:
+		model.load_state_dict(model_zoo.load_url(model_urls['resnet50']), strict=False)
 	return model

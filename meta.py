@@ -15,7 +15,7 @@ class Meta(nn.Module):
 		self.k_shot = k_shot
 		self.topk = k_shot # this is to select topk num of imgs to ensemble.
 
-		self.resnet = resnet_mini()
+		self.resnet = resnet_mini(True)
 		repnet_sz = self.resnet(Variable(torch.rand(1, 3, 224, 224)))[0].size()
 		self.c = repnet_sz[1]
 		self.d = repnet_sz[2]
@@ -97,13 +97,13 @@ class Meta(nn.Module):
 		:return:
 		"""
 		batchsz, setsz, c_, h, w = support_x.size()
-		querysz = support_x.size(1)
+		querysz = query_x.size(1)
 		# [b, setsz, c_, h, w] => [b, 1, setsz, c_, h, w] => [1, b, setsz, c_, h, w] => [querysz, b, setsz, c_, h, w]
 		support_x = support_x.unsqueeze(1).transpose(0, 1).expand(querysz, batchsz, setsz, c_, h, w)
 		# => [querysz*batch, setsz, c_, h, w]
-		support_x = support_x.view(querysz * batchsz, setsz, c_, h, w)
+		support_x = support_x.contiguous().view(querysz * batchsz, setsz, c_, h, w)
 		# [b, querysz, c_, h, w] => [b, querysz, 1, c_, h, w] => [querysz, b, 1, c_, h, w] => [querysz*b, 1, c_, h, w]
-		query_x = query_x.unsqueeze(2).transpose(0, 1).view(querysz * batchsz, 1, c_, h, w)
+		query_x = query_x.unsqueeze(2).transpose(0, 1).contiguous().view(querysz * batchsz, 1, c_, h, w)
 		# cat [querysz*b, setsz, c_, h, w] with [querysz*b, 1, c_, h, w] => [querysz*b, setsz+1, c_, h, w]
 		input = torch.cat([support_x, query_x], dim = 1)
 		# get relation matrix and cls_logits
@@ -114,7 +114,7 @@ class Meta(nn.Module):
 		# [querysz*b, setsz+1, setsz+1, 1] => [querysz, b, setsz+1, setsz+1, 1] => [b, querysz, setsz+1, setsz+1, 1]
 		rn_score = rn_score.view(querysz, batchsz, setsz + 1, setsz + 1, 1).transpose(0, 1)
 		# [querysz*b, setsz+1, 64] => [querysz, b, setsz+1, 64] => [b, querysz, setsz+1, 64]
-		cls_logits = cls_logits.view(querysz, batchsz, setsz + 1, setsz + 1, 1).transpose(0, 1)
+		cls_logits = cls_logits.view(querysz, batchsz, setsz + 1, 64).transpose(0, 1)
 
 		# now try to find the maximum similar node from score matrix
 		# [b, querysz, setsz+1, setsz+1, 1] => [b, querysz, setsz+1, setsz+1]
@@ -122,6 +122,7 @@ class Meta(nn.Module):
 		# [b, querysz, setsz+1, setsz+1]
 		rn_score_np = rn_score.cpu().data.numpy()
 		pred = []
+		support_y_np = support_y.cpu().data.numpy()
 		for i, batch in enumerate(rn_score_np):
 			for j, query in enumerate(batch):
 				# query: [setsz+1, setsz+1]
@@ -133,9 +134,9 @@ class Meta(nn.Module):
 					col_sim.append( np.sum(col[way * self.k_shot : (way + 1) * self.k_shot]) )
 				merge = row + col # [2*n_way]
 				idx = np.array(merge).argmax() % self.n_way
-				pred.append(support_y.cpu().data.numpy()[i, idx])
+				pred.append(support_y_np[i, idx])
 		# pred: [b, querysz]
-		pred = Variable(torch.from_numpy(np.array(pred))).cuda()
+		pred = Variable(torch.from_numpy(np.array(pred).reshape((batchsz, querysz)))).cuda()
 
 		# # indices_row: [b, querysz, setsz+1, topk]
 		# prob_row, indices_row = torch.topk(rn_score, self.topk, dim= 3)
@@ -163,13 +164,18 @@ class Meta(nn.Module):
 		# # label_sort: [b, querysz, 2*topk]
 		# label_sort = torch.gather(support_y, dim= 1, index=indices_sort)
 
-		correct = torch.eq(pred, query_y).sum()
+		correct = torch.eq(pred, query_y).sum().data[0]
 		total = batchsz * querysz
 
-		return correct, total
+		return correct, total, pred
 
 
-
+	def isnan(self, tensor):
+		tensor_np = tensor.cpu().data.numpy()
+		if np.isnan(tensor_np).any():
+			return True
+		else:
+			return False
 
 
 	def rn(self, input):
@@ -208,9 +214,16 @@ class Meta(nn.Module):
 		x_f = self.g(x_rn)
 		# sum over coordinate axis, erase spatial dims => [batchsz * setsz * setsz, -1]
 		x_f = x_f.view(batchsz * setsz * setsz, d * d * d * d, -1).sum(1)  # the last dim can be derived by layer setting
+		# if torch.equal(x_f, Variable(torch.zeros_like(x_f.data)).cuda()):
+		# 	for p in self.f.parameters():
+		# 		print(torch.norm(p.data, 1))
+		# 	print('x_f', self.f(Variable(torch.zeros(1,64)).cuda()).cpu().data.numpy()[0])
+
 		# push to F network
 		# [batchsz * setsz * setsz, -1] => [batchsz * setsz * setsz, new_dim] => [batch, setsz, setsz, 1]
 		score = self.f(x_f).view(batchsz, setsz, setsz, 1)
+		if self.isnan(score):
+			print('nan', score)
 
 		return score, cls_logits
 
@@ -231,7 +244,8 @@ class Meta(nn.Module):
 		batchsz, setsz, c_, h, w = input.size()
 		c, d = self.c, self.d
 
-		pred, cls_logits = self.rn(input)
+		# get similarity matrix score
+		score, cls_logits = self.rn(input)
 
 
 		## now build its label
@@ -249,26 +263,27 @@ class Meta(nn.Module):
 
 		## calculate loss
 		# 1. calcuate symmetric loss, pls refer here: https://math.stackexchange.com/questions/2048817/metric-for-how-symmetric-a-matrix-is
-		# pred: [b, setsz, setsz, 1]
+		# score: [b, setsz, setsz, 1]
 		# sym: [b, setsz, setsz]
 		# anti:[b, setsz, setsz]
-		sym = 0.5 * (pred.squeeze(3) + pred.squeeze(3).transpose(1, 2))
-		anti = 0.5 * (pred.squeeze(3) - pred.squeeze(3).transpose(1, 2))
-		# sym_loss is [-1, 1], 1 stands for symtric while -1 stands for anti-symmetric
+		sym = 0.5 * (score.squeeze(3) + score.squeeze(3).transpose(1, 2))
+		anti = 0.5 * (score.squeeze(3) - score.squeeze(3).transpose(1, 2))
+		# sym_score is [-1, 1], 1 stands for symtric while -1 stands for anti-symmetric
 		# sym_norm: [b, setsz, setz] => [b, setsz] => [b]
 		sym_norm = torch.norm(sym, 2, -1).norm(2, -1)
 		# anti_norm: [b, setsz, setz] => [b, setsz] => [b]
 		anti_norm = torch.norm(anti, 2, -1).norm(2, -1)
 		# [b] - [b] and divide by [b] + [b] => [b]
-		sym_loss = ((sym_norm - anti_norm) / (sym_norm + anti_norm)).mean()
+		sym_score = ((sym_norm - anti_norm) / (sym_norm + anti_norm)).sum() / batchsz
 		# 2. euclidean distance
-		euc_loss = torch.pow(pred - y, 2).mean()
+		euc_loss = torch.pow(score - y, 2).sum() / batchsz
 		# 3. classificatio loss, cls_logits: [b * setsz, 64], label: [b, setsz] => [b*setsz]
 		cls_loss = self.criteon(cls_logits, label.view(-1))
 		# sum over loss
-		rn_loss = euc_loss - 0.1 * sym_loss
+		rn_loss = euc_loss - 0.1 * sym_score
+		# print(cls_loss.data[0], euc_loss.data[0], sym_score.data[0],score.cpu().data.numpy()[:,:1,0])
 
-		return cls_loss, rn_loss, sym_loss
+		return cls_loss, euc_loss, sym_score
 
 
 
@@ -285,9 +300,9 @@ if __name__ == '__main__':
 	k_shot = 5
 	k_query = 1
 	batchsz = 4
-	meta = Meta().cuda()
+	meta = Meta(n_way, k_shot).cuda()
 	# if not mdl file exists, we need to train from pretrained mdl
-	pretrain_mdl_file = 'ckpt/pretain.mdl'
+	pretrain_mdl_file = 'ckpt/pretrain.mdl'
 	mdl_file = 'ckpt/meta%d%d.dml'%(n_way, k_shot)
 
 	if os.path.exists(pretrain_mdl_file):

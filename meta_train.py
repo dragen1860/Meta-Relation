@@ -24,6 +24,7 @@ def eval(db, meta):
 	total_correct = 0
 	total_num = 0
 	total_loss = 0
+	display_onebatch = False
 	for i, batch in enumerate(db):
 		support_x = Variable(batch[0]).cuda()
 		support_y = Variable(batch[1]).cuda()
@@ -31,25 +32,37 @@ def eval(db, meta):
 		query_y = Variable(batch[3]).cuda()
 
 		meta.eval()
-		correct, total = meta.predict(support_x, support_y, query_x, query_y)
+		correct, total, pred = meta.predict(support_x, support_y, query_x, query_y)
 
 		total_correct += correct
 		total_num += total
+
+		if not display_onebatch:
+			display_onebatch = True  # only display once
+			all_img, max_width = make_imgs(n_way, k_shot, k_query, support_x.size(0),
+			                               support_x, support_y, query_x, query_y, pred)
+			all_img = make_grid(all_img, nrow=max_width)
+			tb.add_image('result batch', all_img)
+
 	return total_correct / total_num
 
 
 if __name__ == '__main__':
 	resize = 224
 	n_way = 5
-	k_shot = 5
-	n_query_per_cls = 1
-	batchsz = 1
+	k_shot = 1
+	k_query = 1
+	batchsz = 3
 	meta = Meta(n_way, k_shot).cuda()
 	mdl_file = 'ckpt/meta%d%d.mdl' % (n_way, k_shot)
+	pretrain_mdl_file = 'ckpt/pretrain.mdl'
 
-	if os.path.exists(mdl_file):
-		print('load checkpoint ...', mdl_file)
-		meta.load_state_dict(torch.load(mdl_file))
+	# if os.path.exists(mdl_file):
+	# 	print('>>load checkpoint ...', mdl_file)
+	# 	meta.load_state_dict(torch.load(mdl_file))
+	# elif os.path.exists(pretrain_mdl_file):
+	# 	print('>>load pretrain ...', pretrain_mdl_file)
+	# 	meta.load_state_dict(torch.load(pretrain_mdl_file))
 
 	model_parameters = filter(lambda p: p.requires_grad, meta.parameters())
 	params = sum([np.prod(p.size()) for p in model_parameters])
@@ -61,10 +74,10 @@ if __name__ == '__main__':
 
 	best_val_acc = 0
 	for epoch in range(1000):
-		mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=1000,
+		mini = MiniImagenet('../mini-imagenet/', mode='train', n_way=n_way, k_shot=k_shot, k_query=k_query, batchsz=1000,
 		                    resize=resize)
 		db = DataLoader(mini, batchsz, shuffle=True, num_workers=6)
-		mini_val = MiniImagenet('../mini-imagenet/', mode='val', n_way=n_way, k_shot=k_shot, k_query=1, batchsz=100,
+		mini_val = MiniImagenet('../mini-imagenet/', mode='val', n_way=n_way, k_shot=k_shot, k_query=k_query, batchsz=100,
 		                        resize=resize)
 		db_val = DataLoader(mini_val, batchsz, shuffle=True)
 
@@ -76,14 +89,13 @@ if __name__ == '__main__':
 			query_y = Variable(batch[3]).cuda()
 
 			meta.train()
-			cls_loss, rn_loss, sym_loss = meta(support_x, support_y, query_x, query_y)
+			cls_loss, euc_loss, sym_score = meta(support_x, support_y, query_x, query_y)
 			optimizer.zero_grad()
-			cls_loss.backward(retain_graph = True)
-			rn_loss.backward()
+			euc_loss.backward()
 			optimizer.step()
 
 
-			if step % 50 == 0:
+			if step % 100 == 0:
 				val_acc = eval(db_val, meta)
 
 				tb.add_scalar('accuracy', val_acc)
@@ -107,5 +119,5 @@ if __name__ == '__main__':
 
 
 			if step % 15 == 0 and step != 0:
-				print('%d-way %d-shot %d batch> epoch:%d step:%d, cls loss:%f, rn loss:%f, sym loss:%f' % (
-				n_way, k_shot, batchsz, epoch, step, cls_loss.cpu().data[0], rn_loss.cpu().data[0], sym_loss.cpu().data[0]))
+				print('%d-way %d-shot %d batch> epoch:%d step:%d, cls loss:%f, euc loss:%f, sym scores:%f' % (
+				n_way, k_shot, batchsz, epoch, step, cls_loss.cpu().data[0], euc_loss.cpu().data[0], sym_score.cpu().data[0]))
